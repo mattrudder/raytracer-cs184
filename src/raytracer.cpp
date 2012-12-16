@@ -6,6 +6,7 @@
 #include "scene.h"
 
 void printUsage(char* exeName);
+
 int main(int argc, char** argv)
 {
     if (argc < 2)
@@ -23,11 +24,8 @@ int main(int argc, char** argv)
         printf("Scene not loaded!");
     }
 
+    sceneRender();
     sceneDestroy();
-
-    // TODO: Save scene pixels as png
-    //FIBITMAP *img = FreeImage_ConvertFromRawBits(pixels, w, h, w * 3, 24, 0xFF0000, 0x00FF00, 0x0000FF, false);
-    //FreeImage_Save(FIF_PNG, img, "out.png", 0);
 
     FreeImage_DeInitialise();
 
