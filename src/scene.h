@@ -2,6 +2,8 @@
 #pragma once
 
 #include <memory>
+
+#define GLM_SWIZZLE
 #include <glm/glm.hpp>
 
 void sceneLoad(char* sceneFile);
@@ -19,6 +21,7 @@ struct camera_t
 
 struct material_t
 {
+    glm::vec3 ambient;
     glm::vec3 diffuse;
     glm::vec3 specular;
     glm::vec3 emission;
@@ -27,7 +30,10 @@ struct material_t
 
 struct object_t
 {
+    // MEGA-HACKS
+    bool is_sphere;
     glm::mat4x4 xform;
+    glm::mat4x4 xform_inv;
     material_t material;
 };
 

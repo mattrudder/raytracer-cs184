@@ -5,6 +5,7 @@
 #include <functional>
 #include <vector>
 #include <stack>
+#include <queue>
 
 #include <FreeImage.h>
 
@@ -30,10 +31,11 @@ static std::vector<triangle_t> triangles;
 static std::vector<sphere_t> spheres;
 static std::vector<light_t> lights;
 
-static glm::mat4x4 xform;
-static std::stack<glm::mat4x4> matrix_stack;
+static std::stack<glm::mat4> matrix_stack;
 
 static const int c_bpp = 3;
+
+static material_t material;
 
 static scene_cmd_t commands[] = 
 {
@@ -62,8 +64,12 @@ static scene_cmd_t commands[] =
     { "sphere", 4, [](float* args)
         {
             sphere_t s;
+            s.is_sphere = true;
             s.position = glm::vec3(args[0], args[1], args[2]);
             s.radius = args[3];
+            s.material = material;
+            s.xform = matrix_stack.top();
+            s.xform_inv = glm::inverse(s.xform);
 
             spheres.push_back(s);
         }
@@ -103,9 +109,13 @@ static scene_cmd_t commands[] =
     { "tri", 3, [](float* args)
         {
             triangle_t t;
+            t.is_sphere = false;
             t.indicies[0] = (int)args[0];
             t.indicies[1] = (int)args[1];
             t.indicies[2] = (int)args[2];
+            t.material = material;
+            t.xform = matrix_stack.top();
+            t.xform_inv = glm::inverse(t.xform);
 
             triangles.push_back(t);
         }
@@ -117,27 +127,26 @@ static scene_cmd_t commands[] =
     },
     { "translate", 3, [](float* args)
         {
-            xform = glm::translate(xform, glm::vec3(args[0], args[1], args[2]));
+            matrix_stack.top() = glm::translate(matrix_stack.top(), glm::vec3(args[0], args[1], args[2]));
         }
     },
     { "rotate", 4, [](float* args)
         {
-            xform = glm::rotate(xform, args[3], glm::vec3(args[0], args[1], args[2]));
+            matrix_stack.top() = glm::rotate(matrix_stack.top(), args[3], glm::vec3(args[0], args[1], args[2]));
         }
     },
     { "scale", 3, [](float* args)
         {
-            xform = glm::scale(xform, glm::vec3(args[0], args[1], args[2]));
+            matrix_stack.top() = glm::scale(matrix_stack.top(), glm::vec3(args[0], args[1], args[2]));
         }
     },
     { "pushTransform", 0, [](float* args)
         {
-            matrix_stack.push(xform);
+            matrix_stack.push(matrix_stack.top());
         }
     },
     { "popTransform", 0, [](float* args)
         {
-            xform = matrix_stack.top();
             matrix_stack.pop();
         }
     },
@@ -163,22 +172,27 @@ static scene_cmd_t commands[] =
     },
     { "ambient", 3, [](float* args)
         {
+            material.ambient = glm::vec3(args[0], args[1], args[2]);
         }
     },
     { "diffuse", 3, [](float* args)
         {
+            material.diffuse = glm::vec3(args[0], args[1], args[2]);
         }
     },
     { "specular", 3, [](float* args)
         {
+            material.specular = glm::vec3(args[0], args[1], args[2]);
         }
     },
     { "shininess", 1, [](float* args)
         {
+            material.shininess = args[0];
         }
     },
     { "emission", 3, [](float* args)
         {
+            material.emission = glm::vec3(args[0], args[1], args[2]);
         }
     }
 };
@@ -196,6 +210,15 @@ void sceneLoad(char* sceneFile)
     char* line = NULL;
     size_t len = 0;
     ssize_t read;
+
+    // default scene attributes
+    material.ambient = glm::vec3(0.2f, 0.2f, 0.2f);
+    material.diffuse = glm::vec3(0, 0, 0);
+    material.specular = glm::vec3(0, 0, 0);
+    material.emission = glm::vec3(0, 0, 0);
+    material.shininess = 0;
+
+    matrix_stack.push(glm::mat4(1.0));
 
     while ((read = getline(&line, &len, file)) != -1)
         sceneDoLine(line, len);
@@ -281,6 +304,11 @@ void sceneDoLine(char* line, size_t lenLine)
 
 void sceneRender()
 {
+    using glm::cross;
+    using glm::clamp;
+    using glm::vec3;
+    using glm::normalize;
+
     // TODO: Save scene pixels as png
     int width = g_theScene->output_size.x;
     int height = g_theScene->output_size.y;
@@ -293,12 +321,14 @@ void sceneRender()
     float halfWidth = width / 2.0f;
     float halfHeight = height / 2.0f;
 
-    glm::vec3 w = glm::normalize(cam.look_from - cam.look_at);
-    glm::vec3 u = glm::normalize(glm::cross(cam.up, w));
-    glm::vec3 v = glm::normalize(glm::cross(u, w));
+    vec3 w = normalize(cam.look_from - cam.look_at);
+    vec3 u = normalize(cross(cam.up, w));
+    vec3 v = normalize(cross(u, w));
 
     ray_t ray;
     ray.origin = cam.look_from;
+
+    ray_query_t best;
 
     float multi = tanFov / halfHeight;
     unsigned char* currentPixel = pixels;
@@ -307,31 +337,69 @@ void sceneRender()
         float cy = halfHeight - (y + 0.5f);
         for (int x = 0; x < width; currentPixel += c_bpp, ++x)
         {
-            // TODO: Get Ray through pixel.
+            // reset best query.
+            best.obj = NULL;
+            best.t = FLT_MAX;
+
+            // Get Ray through pixel.
             float cx = (x + 0.5f) - halfWidth;
             float a = cx * multi;
             float b = cy * multi;
 
-            ray.direction = glm::normalize((a * u) + (b * v) - w);
+            vec3 rayDirection = normalize((a * u) + (b * v) - w);
 
-            // TODO: Find intersection with scene.
-            glm::vec3* vertices = g_theScene->vertices;
+            // Find intersection with scene.
+            ray_query_t query;
+            vec3* vertices = g_theScene->vertices;
             triangle_t* tri = g_theScene->triangles;
             for (int t = 0; t < g_theScene->triangle_count; ++t, ++tri)
             {
+                glm::vec4 rayOriginT = tri->xform_inv * glm::vec4(cam.look_from, 1.0f);
+                glm::vec4 rayDirectionT = tri->xform_inv * glm::vec4(rayDirection, 0.0f);
+
+                ray.origin = vec3(rayOriginT.x, rayOriginT.y, rayOriginT.z);
+                ray.direction = vec3(rayDirectionT.x, rayDirectionT.y, rayDirectionT.z);
+
                 int* indices = tri->indicies;
-                float bu, bv, bw, bt;
-                if (intersectRayTriangle(ray, vertices[indices[0]], vertices[indices[1]], vertices[indices[2]], bu, bv, bw, bt))
+                if (intersectRayTriangle(ray, vertices[indices[0]], vertices[indices[1]], vertices[indices[2]], query))
                 {
-                    // TODO: Shade pixel correctly.
-                    *(currentPixel + 2) = 0xFF;
+                    query.obj = tri;
+                    if (query.t < best.t) best = query;
                 }
+            }
+
+            sphere_t* sph = g_theScene->spheres;
+            for (int s = 0; s < g_theScene->sphere_count; ++s, ++sph)
+            {
+                glm::vec4 rayOriginT = sph->xform_inv * glm::vec4(cam.look_from, 1.0f);
+                glm::vec4 rayDirectionT = sph->xform_inv * glm::vec4(rayDirection, 0.0f);
+
+                ray.origin = vec3(rayOriginT.x, rayOriginT.y, rayOriginT.z);
+                ray.direction = vec3(rayDirectionT.x, rayDirectionT.y, rayDirectionT.z);
+                
+                if (intersectRaySphere(ray, *sph, query))
+                {
+                    query.obj = sph;
+                    if (query.t < best.t) best = query;
+                }
+            }
+
+            // TODO: Light object
+            if (best.obj != NULL)
+            {
+                material_t& mat = best.obj->material;
+                vec3 color = mat.ambient;
+
+                // final color conversion.
+                currentPixel[0] = (unsigned char) (clamp(color.b, 0.0f, 1.0f) * 255.0f);
+                currentPixel[1] = (unsigned char) (clamp(color.g, 0.0f, 1.0f) * 255.0f);
+                currentPixel[2] = (unsigned char) (clamp(color.r, 0.0f, 1.0f) * 255.0f);
             }
         }
     }
 
     printf("Rendering scene to %s...\n", output);
-    FIBITMAP *img = FreeImage_ConvertFromRawBits(pixels, width, height, width * c_bpp, c_bpp * 8, 0xFF0000, 0x00FF00, 0x0000FF, false);
+    FIBITMAP *img = FreeImage_ConvertFromRawBits(pixels, width, height, width * c_bpp, c_bpp * 8, FI_RGBA_RED_MASK, FI_RGBA_GREEN_MASK, FI_RGBA_BLUE_MASK, false);
     FreeImage_Save(FIF_PNG, img, isEmpty(g_theScene->output) ? "out.png" : g_theScene->output, 0);
 
     free(pixels);
